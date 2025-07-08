@@ -4,27 +4,33 @@ import datetime
 import secrets
 from jwcrypto import jwk, jws
 from contextlib import asynccontextmanager
-import redis.asyncio as redis
-from redis.asyncio.connection import ConnectionPool
+# import redis.asyncio as redis
+import redis
+#from redis.asyncio.connection import ConnectionPool
+from redis.exceptions import DataError
 from urllib import parse
+from typing import Annotated
 
-from fastapi import FastAPI, Response, Request, status
+from fastapi import FastAPI, Response, Request, Cookie, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi import Request, Depends, HTTPException, Response
+from fastapi.responses import RedirectResponse, PlainTextResponse, JSONResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from oauthlib.oauth2 import FatalClientError, OAuth2Error
 from oauthlib.oauth2.rfc6749.endpoints import TokenEndpoint, AuthorizationEndpoint
 from oauthlib.oauth2.rfc6749.tokens import BearerToken, signed_token_generator
 from oauthlib.oauth2.rfc6749.utils import scope_to_list
 from oauthlib.oauth2.rfc6749.clients import WebApplicationClient
-from oauthlib.oauth2.rfc6749.grant_types import ClientCredentialsGrant, AuthorizationCodeGrant
-from oauthlib.oauth2.rfc6749.request_validator import RequestValidator
-from oauthlib.oauth2.rfc6749.errors import FatalClientError, InvalidRequestError, OAuth2Error
-from oauthlib.openid.connect.core.grant_types import AuthorizationCodeGrantDispatcher
+from oauthlib.oauth2.rfc6749.grant_types import ClientCredentialsGrant
+#from oauthlib.oauth2.rfc6749.request_validator import RequestValidator
+from oauthlib.openid.connect.core.request_validator import RequestValidator
+from oauthlib.oauth2.rfc6749.errors import FatalClientError, InvalidRequestError, OAuth2Error, LoginRequired
+from oauthlib.openid.connect.core.exceptions import OpenIDClientError
 from oauthlib.openid.connect.core.tokens import JWTToken
-from oauthlib.openid.connect.core.grant_types.dispatchers import AuthorizationCodeGrantDispatcher, AuthorizationTokenGrantDispatcher
+from oauthlib.openid.connect.core.grant_types import AuthorizationCodeGrant, AuthorizationCodeGrantDispatcher, AuthorizationTokenGrantDispatcher
 
 import oauthlib.common as ocommon
 
@@ -37,14 +43,14 @@ import oauthlib.common as ocommon
 # log.addHandler(logging.StreamHandler(sys.stdout))
 # log.setLevel(logging.DEBUG)
 
-pool = ConnectionPool.from_url(url="redis://localhost", decode_responses=True)
+pool = redis.ConnectionPool.from_url(url="redis://localhost", decode_responses=True)
 r = redis.Redis(connection_pool=pool)
+
+templates = Jinja2Templates(directory="templates")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     yield
-
-
 
 app = FastAPI(lifespan=lifespan)
 
@@ -56,9 +62,6 @@ keys.add(key)
 
 with open("oadb.toml", "rb") as f:
     oadb = tomllib.load(f)
-
-from fastapi import Request, Depends, HTTPException, Response
-from fastapi.responses import RedirectResponse
 
 # This must be randomly generated
 RANDON_SESSION_ID = "iskksioskassyidd"
@@ -104,12 +107,13 @@ async def secret():
     return {"secret": "info"}
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        content={"error": "access_denied", "error_description": "Unauthorized"},
-    )
+# @app.exception_handler(RequestValidationError)
+# async def validation_exception_handler(request: Request, exc: RequestValidationError):
+#     print(exc)
+#     return JSONResponse(
+#         status_code=status.HTTP_401_UNAUTHORIZED,
+#         content={"error": "access_denied", "error_description": "Unauthorized"},
+#     )
 
 class Client():
   def __init__(self, client_id, audience, scopes, grant_type):
@@ -158,7 +162,8 @@ class RV(RequestValidator):
 
     def get_default_redirect_uri(self, client_id, request, *args, **kwargs):
         print("get def red uri")
-        return "http://abcd"
+        #return "http://abcd"
+        return None
 
     def validate_scopes(self, client_id, scopes, client, request, *args, **kwargs):
         print("valid scopes")
@@ -172,17 +177,35 @@ class RV(RequestValidator):
         return "bc de"
 
     def validate_response_type(self, client_id, response_type, client, request, *args, **kwargs):
-        print("valid resp  type")
+        print("valid resp  type ", client_id, response_type, client)
         # Clients should only be allowed to use one type of response type, the
         # one associated with their one allowed grant type.
         # In this case it must be "code".
         return True
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
-        print("save auth cd", client_id, code)
-        # Remember to associate it with request.scopes, request.redirect_uri
-        # request.client and request.user (the last is passed in
-        # post_authorization credentials, i.e. { 'user': request.user}.
-        pass
+        print("save auth cd", client_id, code, request.headers)
+        auth_code = AuthCode(client_id=client_id, code=code["code"],
+                             redirect_uri=request.redirect_uri)
+        try:
+            a2 = request.headers["a2"]
+            a2_db = r.get(a2)
+            a2_sess = A2Session.model_validate_json(a2_db)
+            r.expire(a2, int(datetime.timedelta(hours=3).total_seconds()))
+            auth_code.email = a2_sess.email
+            r.setex(auth_code.code, int(datetime.timedelta(minutes=10).total_seconds()),
+                          auth_code.model_dump_json())
+        except (DataError, ValidationError) as e:
+            raise RequiresAuthentication(auth_code)
+    def validate_user_match(self, id_token_hint, scopes, claims, request):
+        return True
+    def validate_silent_login(self, request):
+        return True
+    def validate_silent_authorization(self, request):
+        return True
+
+class RequiresAuthentication(Exception):
+    def __init__(self, auth_code):
+        self.auth_code = auth_code
 
 class Token(BaseModel):
     grant_type: str
@@ -190,6 +213,16 @@ class Token(BaseModel):
     client_secret: str
     audience: str
     scope: str=None
+
+class AuthCode(BaseModel):
+    client_id: str
+    redirect_uri: str
+    email: str=None
+    scopes: list[str]=None
+    code: str
+
+class A2Session(BaseModel):
+    email: str
 
 def generate_signed_token(request):
     now = datetime.datetime.utcnow()
@@ -214,11 +247,15 @@ def generate_signed_token(request):
     return sig
 
 ac = AuthorizationCodeGrant(request_validator=RV())
-ac2 = AuthorizationCodeGrant(request_validator=RV())
-aCode_disp = AuthorizationCodeGrantDispatcher(default_grant=ac, oidc_grant=ac2)
+aCode_disp = AuthorizationCodeGrantDispatcher(default_grant=ac, oidc_grant=ac)
+
+def auth_session_validator(request):
+    return {}
+ac.custom_validators.post_auth.append(auth_session_validator)
+
 
 @app.post("/token")
-async def tok(t: Token, request: Request):
+def tok(t: Token, request: Request):
     g = ClientCredentialsGrant(request_validator=RV())
     e = lambda r: r.expires_in
     te = TokenEndpoint("client_credentials",
@@ -228,49 +265,72 @@ async def tok(t: Token, request: Request):
     h, c, s = te.create_token_response(str(request.url), body=t.model_dump())
     return Response(c, headers=h, status_code=s)
 
-ae = AuthorizationEndpoint("code", None, {"code": aCode_disp})
+class DefaultResponseType():
+    def create_authorization_response(self,_,__):
+        raise FatalClientError("invalid_response_type")
 
+ae = AuthorizationEndpoint("default", None, {"code": aCode_disp,
+                                             "default": DefaultResponseType()})
 @app.get("/authorize")
-async def ath(request: Request):
+def ath(request: Request, a2 : Annotated[str | None, Cookie()] = None):
+    auth_days = 7
+    auth_secs = int(datetime.timedelta(days=auth_days).total_seconds())
+    a2 = "abcd"
     try: 
-        sc, ri = ae.validate_authorization_request(str(request.url))
+        h, c, s = ae.create_authorization_response(str(request.url), headers={"a2": a2})
+        return PlainTextResponse(h.get("Location"), headers=h, status_code=s)
+    except RequiresAuthentication as e:
+        auth_state = secrets.token_urlsafe(32)
+        a2_new = secrets.token_urlsafe(32)
+        r.setex(auth_state, auth_secs, json.dumps({"a2": a2_new}))
+        r.setex(a2_new, auth_secs, e.auth_code.model_dump_json())
+        redir = RedirectResponse(url="/u/login?state=%s" % auth_state, status_code=302)
+        redir.set_cookie(key="a2", value=a2_new, max_age=auth_secs)
+        return redir
     except FatalClientError as e:
         print(e)
-    except InvalidRequestError as e:
-        print(e)
-    except OAuth2Error as e:
-        print(e)
-    a1state = secrets.token_urlsafe(64)
-    print("--")
-    print(sc)
-    print(ri)
-    h, c, s = ae.create_authorization_response(str(request.url))
-    print("==")
-    print(str(request.url))
-    print("=***=")
-    await r.setex(a1state, 30, json.dumps({}))
-    # response.set_cookie(key="idSrv", value=a1state)
-    # h, c, s = ae.create_authorization_response(str(request.url))
-    # return Response(c, headers=h, status_code=s)
-    return "/u/login?%s" % parse.urlencode({"state": a1state})
+        return PlainTextResponse("FatalClientError",400)
+
+# import logging
+# logging.getLogger().addHandler(logging.StreamHandler())
+# logger = logging.getLogger('uvicorn.error')
+# logging.getLogger().setLevel(logging.DEBUG)
+
+
+@app.get("/authorize/resume")
+def id_srv2_get(request: Request, state: str | None = None):
+    print(state)
+    return PlainTextResponse("ath")
 
 @app.get("/u/login")
-def id_srv_get():
-    pass
+def id_srv_get(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
+    if not (r.exists(a2) and r.exists(state)):
+        #try to parse, confirm client_id
+        return PlainTextResponse("FatalClientError",400)
+    # a2_sess = A2Session.model_validate_json(a2_db)
+    # r.expire(a2, int(datetime.timedelta(hours=3).total_seconds()))
+    # auth_code.email = a2_sess.email
+    # r.setex(auth_code.code, int(datetime.timedelta(minutes=10).total_seconds()),
+    #         auth_code.model_dump_json())
+    return templates.TemplateResponse(
+        request=request, name="login.djhtml", context={"id": "id"})
 
-@app.get("/u/login")
-def id_srv_post():
-    pass
+@app.post("/u/login")
+def id_srv_post(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
+    redir = RedirectResponse(url="/u/login?state=%s" % auth_state, status_code=302)
+    redir.set_cookie(key="a2", value=a2_new, max_age=auth_secs)
+    return redir
 
 
 @app.get("/launch")
 def launch():
+    state = secrets.token_urlsafe(8)
     c = WebApplicationClient("cli_id_123")
-    print(c.prepare_request_uri("https://localhost:8000/authorize",
-                                redirect_uri="https://localhost:8000/code",
-                                scope="openid profile email",
-                                state="mystate"))
-    return {}
+    launch_url = c.prepare_request_uri("http://localhost:8000/authorize",
+                                       redirect_uri="https://localhost:8000/code",
+                                       scope="openid profile email",
+                                       state=state)
+    return RedirectResponse(url=launch_url, status_code=302)
 
 @app.get("/.well-known/jwks.json")
 def jwks():
