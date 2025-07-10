@@ -102,9 +102,9 @@ def get_auth_user(request: Request):
     return True
 
 
-@app.get("/", dependencies=[Depends(get_auth_user)])
-async def secret():
-    return {"secret": "info"}
+# @app.get("/", dependencies=[Depends(get_auth_user)])
+# async def secret():
+#     return {"secret": "info"}
 
 
 # @app.exception_handler(RequestValidationError)
@@ -298,12 +298,14 @@ def ath(request: Request, a2 : Annotated[str | None, Cookie()] = None):
 
 
 @app.get("/authorize/resume")
-def id_srv2_get(request: Request, state: str | None = None):
-    print(state)
-    return PlainTextResponse("ath")
+def resume_get(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
+    id_a2 = secrets.token_urlsafe(32)
+    redir = RedirectResponse(url="/authorize/resume?state=%s" % id_state, status_code=302)
+    redir.set_cookie(key="a2", value=id_a2, max_age=auth_secs)
+    return redir
 
 @app.get("/u/login")
-def id_srv_get(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
+def login_form_get(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
     if not (r.exists(a2) and r.exists(state)):
         #try to parse, confirm client_id
         return PlainTextResponse("FatalClientError",400)
@@ -316,9 +318,13 @@ def id_srv_get(request: Request, state: str = None, a2 : Annotated[str | None, C
         request=request, name="login.djhtml", context={"id": "id"})
 
 @app.post("/u/login")
-def id_srv_post(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
-    redir = RedirectResponse(url="/u/login?state=%s" % auth_state, status_code=302)
-    redir.set_cookie(key="a2", value=a2_new, max_age=auth_secs)
+def login_form_post(request: Request, state: str = None, a2 : Annotated[str | None, Cookie()] = None):
+    auth_minutes = 7
+    auth_secs = int(datetime.timedelta(minutes=auth_minutes).total_seconds())
+    id_state = secrets.token_urlsafe(32)
+    id_a2 = secrets.token_urlsafe(32)
+    redir = RedirectResponse(url="/authorize/resume?state=%s" % id_state, status_code=302)
+    redir.set_cookie(key="a2", value=id_a2, max_age=auth_secs)
     return redir
 
 
@@ -326,8 +332,8 @@ def id_srv_post(request: Request, state: str = None, a2 : Annotated[str | None, 
 def launch():
     state = secrets.token_urlsafe(8)
     c = WebApplicationClient("cli_id_123")
-    launch_url = c.prepare_request_uri("http://localhost:8000/authorize",
-                                       redirect_uri="https://localhost:8000/code",
+    launch_url = c.prepare_request_uri("https://192.168.1.21:8112/authorize",
+                                       redirect_uri="https://192.168.1.21:8112/code",
                                        scope="openid profile email",
                                        state=state)
     return RedirectResponse(url=launch_url, status_code=302)
@@ -335,3 +341,7 @@ def launch():
 @app.get("/.well-known/jwks.json")
 def jwks():
     return keys.export(private_keys=False, as_dict=True)
+
+@app.get("/")
+def home():
+    return PlainTextResponse("home")
