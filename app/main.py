@@ -75,7 +75,7 @@ templates = Jinja2Templates(directory="templates")
 async def lifespan(_: FastAPI):
     yield
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, openapi_url=None, docs_url=None, redoc_url=None)
 
 f = open("key.pem","rb")
 k = f.read()
