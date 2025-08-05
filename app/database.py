@@ -23,8 +23,6 @@ key = jwk.JWK.from_pem(k, password=None)
 keys = jwk.JWKSet()
 keys.add(key)
 
-print(key.thumbprint())
-
 # https://blog.stackademic.com/using-fastapi-with-sqlalchemy-5cd370473fe5
 
 # from sqlalchemy import create_engine, Column, Integer, String

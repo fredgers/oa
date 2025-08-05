@@ -11,8 +11,6 @@ import redis
 from database import redis_pool, oadb, key, keys
 from jwcrypto import jws
 
-print(key.thumbprint())
-
 from redis.exceptions import DataError
 
 # Create a SysLogHandler and formatter
@@ -190,39 +188,9 @@ class RV(RequestValidator):
             id_token["nickname"] = grant_info.nickname
         res_bytes = json.dumps(id_token).encode('utf-8')
         jwstoken = jws.JWS(res_bytes)
-        print(key.thumbprint())
         jwstoken.add_signature(key, protected={"alg": "RS256", "typ": "JWT", "kid": key.thumbprint()})
         sig = jwstoken.serialize(compact=True)
         return sig
     def validate_user_match(self, id_token_hint, scopes, claims, request):
         log.debug("val_usr_match... id_token_hint")
         return True
-
-
-## get_id_token from add_id_token ?
-
-def generate_signed_token(request):    
-    ## get_id_token
-    now = datetime.utcnow()
-    exp = now + timedelta(seconds=request.expires_in)
-
-    claims = {
-        'iss': request.uri,
-        # 'aud': request.client.audience,
-        # 'sub': request.client_id,
-        'aud': request.client_id,
-        'sub': request.user,
-        # 'scope': " ".join(request.scopes),
-        'iat': int(now.timestamp()),
-        'exp': int(round(exp.timestamp())),
-        "gty": request.grant_type,
-        # 'permissions': scope_to_list(request.scope)
-    }
-    
-    ## finalize_id_token
-    claims.update(request.claims or {})
-    res_bytes = json.dumps(claims).encode('utf-8')
-    jwstoken = jws.JWS(res_bytes)
-    jwstoken.add_signature(key, protected={"alg": "RS256", "typ": "JWT", "kid": key.thumbprint()})
-    sig = jwstoken.serialize(compact=True)
-    return sig
