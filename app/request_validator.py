@@ -10,6 +10,7 @@ from oauthlib.openid.connect.core.request_validator import RequestValidator
 import redis
 from database import redis_pool, oadb, key, keys
 from jwcrypto import jws
+import requests
 
 from redis.exceptions import DataError
 
@@ -23,6 +24,14 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 log.addHandler(syslog_handler)
 
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+COUCH_DB_URL=os.environ["COUCH_DB_URL"]
+COUCH_VIEW_URL=os.environ["COUCH_VIEW_URL"]
+COUCH_DB_AUTH=(os.environ["COUCH_DB_USER"],os.environ["COUCH_DB_PASS"])
+COUCH_VIEW_PARAMS={"include_docs": True, "reduce": False}
 
 class GrantInfo(BaseModel):
     client_id: str
@@ -68,7 +77,7 @@ r = redis.Redis(connection_pool=redis_pool)
 
 class RV(RequestValidator):
     def confirm_redirect_uri(self, client_id, code, redirect_uri, client, request, *args, **kwargs):
-        return request.grant_info.redirect_uri == redirect_uri
+        return request.req_info["redirect_uri"] == redirect_uri
     def save_bearer_token(self, token, request, *args, **kwargs):
         log.debug("save_bt: ")
         return None
@@ -119,20 +128,23 @@ class RV(RequestValidator):
 
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
         log.debug("sv_auth_code")
-        ac = AuthCode.model_validate({"auth_sess_pointer": request.auth_sess})
-        redis_conn = redis.Redis(connection_pool=redis_pool)
-        grant_info_json = redis_conn.get(request.auth_sess)
-        grant_info = GrantInfo.model_validate_json(grant_info_json) #test client_id
-        grant_info.iss = request.client.iss
-        grant_info.redirect_uri = request.redirect_uri
-        grant_info.response_type = request.response_type #?
-        grant_info.state = request.state
-        grant_info.scopes = request.scopes
-        grant_info.authorization_code = code["code"] #test?
-        log.debug("code... " + str(code))
-        log.debug("ac... " + str(ac.model_dump_json()))
-        redis_conn.setex(request.auth_sess, int(timedelta(hours=3).total_seconds()), grant_info.model_dump_json())
-        redis_conn.setex(code["code"], int(timedelta(minutes=10).total_seconds()), ac.model_dump_json())
+        requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
+                      json={"type": "authorization_code", "authorization_code": code["code"],
+                            "auth_cookie": request.auth_sess, "timestamp": int(datetime.now().timestamp())})
+        # ac = AuthCode.model_validate({"auth_sess_pointer": request.auth_sess})
+        # redis_conn = redis.Redis(connection_pool=redis_pool)
+        # grant_info_json = redis_conn.get(request.auth_sess)
+        # grant_info = GrantInfo.model_validate_json(grant_info_json) #test client_id
+        # grant_info.iss = request.client.iss
+        # grant_info.redirect_uri = request.redirect_uri
+        # grant_info.response_type = request.response_type #?
+        # grant_info.state = request.state
+        # grant_info.scopes = request.scopes
+        # grant_info.authorization_code = code["code"] #test?
+        # log.debug("code... " + str(code))
+        # log.debug("ac... " + str(ac.model_dump_json()))
+        # redis_conn.setex(request.auth_sess, int(timedelta(hours=3).total_seconds()), grant_info.model_dump_json())
+        # redis_conn.setex(code["code"], int(timedelta(minutes=10).total_seconds()), ac.model_dump_json())
 
     def authenticate_client(self, request, *args, **kwargs):
         log.debug("auth cli")
@@ -150,20 +162,27 @@ class RV(RequestValidator):
         log.debug("validate_grant_type: " + grant_type)
         return {grant_type}.issubset(client.valid_grant_types)
     def validate_code(self, client_id, code, client, request, *args, **kwargs):
-        log.debug("validate_code: " + code)
-        redis_conn = redis.Redis(connection_pool=redis_pool)
+        log.debug("validate_code   " + code)
         try:
-            auth_code_json = redis_conn.get(code)
-            auth_code = AuthCode.model_validate_json(auth_code_json)
-            grant_info_json = redis_conn.get(auth_code.auth_sess_pointer)
-            grant_info = GrantInfo.model_validate_json(grant_info_json) #test client_id
-            if grant_info.client_id != client_id:
-                return False
-            request.grant_info = grant_info
-            request.claims = {"claim1": "claim_1", "email": "fred.gerson@furumichi.co.jp"}
-            request.scopes = grant_info.scopes
+            r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
+                             params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_code",code,
+                                                                                  int(datetime.now().timestamp()) - 60 * 10]),
+                                                         "end_key": json.dumps(["authorization_code",code,{}])})
+            authorization_code = r.json()["rows"][-1]["doc"]
+            log.debug("auth_code: " + str(authorization_code))
+            r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
+                             params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_success",authorization_code["auth_cookie"],
+                                                                                  int(datetime.now().timestamp()) - 60 * 60 * 5]),
+                                                         "end_key": json.dumps(["authorization_success",authorization_code["auth_cookie"],{}])})
+            authorization_success = r.json()["rows"][-1]["doc"]
+            log.debug("auth_success: " + str(authorization_success))
+            request.auth_claims = authorization_success["auth_claims"]
+            request.scopes = authorization_success["req_scopes"]
+            request.req_info = authorization_success["req_info"]
             return True
-        except (DataError, ValidationError) as e:
+        except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
+            log.debug("auth error ")
+            log.debug("auth error: " + str(e))
             return False
 
     def validate_silent_login(self, request):
@@ -177,15 +196,15 @@ class RV(RequestValidator):
         return None
     def finalize_id_token(self, id_token, token, token_handler, request):
         log.debug("fin_id_tok")
-        grant_info = request.grant_info
-        id_token["iss"] = grant_info.iss
-        id_token["aud"] = grant_info.client_id
-        id_token["sub"] = grant_info.sub
-        id_token["exp"] = id_token["iat"] + request.expires_in
-        if {"email"}.issubset(grant_info.scopes):
-            id_token["email"] = grant_info.email
-        if {"profile"}.issubset(grant_info.scopes):
-            id_token["nickname"] = grant_info.nickname
+        # id_token["iss"] = grant_info.iss
+        id_token["aud"] = request.req_info["client_id"]
+        id_token["sid"] = request.auth_claims["sid"]
+        # id_token["sub"] = grant_info.sub
+        # id_token["exp"] = id_token["iat"] + request.expires_in
+        # if {"email"}.issubset(grant_info.scopes):
+        #     id_token["email"] = grant_info.email
+        # if {"profile"}.issubset(grant_info.scopes):
+        #     id_token["nickname"] = grant_info.nickname
         res_bytes = json.dumps(id_token).encode('utf-8')
         jwstoken = jws.JWS(res_bytes)
         jwstoken.add_signature(key, protected={"alg": "RS256", "typ": "JWT", "kid": key.thumbprint()})

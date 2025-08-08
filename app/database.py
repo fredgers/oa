@@ -27,17 +27,56 @@ keys.add(key)
 
 # from sqlalchemy import create_engine, Column, Integer, String
 # from sqlalchemy.orm import sessionmaker
-# from sqlalchemy.ext.declarative import declarative_base
+import sqlalchemy as sa
 
-# SQLALCHEMY_DATABASE_URL = "postgresql://user:password@localhost/dbname"
+from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
+import uuid
 
-# engine = create_engine(SQLALCHEMY_DATABASE_URL)
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-# Base = declarative_base()
+SQLALCHEMY_DATABASE_URL = "postgresql://oidc:xMBuF2gKvyqBev8t@192.168.1.6/oidc"
 
-# def get_db():
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close()
+engine = sa.create_engine(SQLALCHEMY_DATABASE_URL, echo=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# from pydantic import BaseModel
+
+# class ItemBase(BaseModel):
+#     name: str
+#     description: str
+# class ItemCreate(ItemBase):
+#     pass
+# class Item(ItemBase):
+#     id: uuid.UUID
+
+#     class Config:
+#         orm_mode = True
+
+metadata_obj = sa.MetaData(schema="oa")
+
+class Base(DeclarativeBase):
+  metadata = metadata_obj
+
+class User(Base):
+  __tablename__ = "users"
+  id: Mapped[uuid.UUID | None] = mapped_column(primary_key=True, default=uuid.uuid4)
+  email: Mapped[str | None]
+  password: Mapped[str | None]
+  first_name: Mapped[str | None]
+  last_name: Mapped[str | None]
+
+# u = User(email="c", password="c", first_name="ger", last_name="rso")
+# print(u)
+# db_gen = get_db()
+# db = next(db_gen)
+# db.add_all([u])
+
+# db.commit()
+
+# for class_instance in db.query(User).all():
+#     print(vars(class_instance))
