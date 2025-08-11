@@ -31,7 +31,7 @@ from pydantic import BaseModel, ValidationError
 from redis.exceptions import DataError
 from requests_oauthlib import OAuth2Session
 
-from request_validator import RV, GrantInfo
+from request_validator import RV
 from database import redis_pool, oadb, key, keys
 from redis.exceptions import DataError
 import requests
@@ -70,23 +70,6 @@ RANDON_SESSION_ID = "iskksioskassyidd"
 # This must be a lookup on user database
 USER_CORRECT = ("a", "a")
 
-
-@app.post("/logout")
-async def session_logout(response: Response):
-    response.delete_cookie(key="Authorization")
-    SESSION_DB.pop(RANDON_SESSION_ID, None)
-    return {"status": "logged out"}
-
-def get_grant_info(redis_conn, auth_sess, client_id):
-    try: 
-        grant_info_json = redis_conn.get(auth_sess)
-        grant_info = GrantInfo.model_validate_json(grant_info_json)
-        if grant_info.client_id != client_id:
-            raise FatalClientError()
-    except (DataError,ValidationError) as e:
-        grant_info = GrantInfo.model_validate({"client_id": client_id})            
-    return grant_info
-
 o_ac = openid_grant_types.AuthorizationCodeGrant(request_validator=RV(), refresh_token=False,
                                                  pre_auth=[], post_auth=[])
 g = ClientCredentialsGrant(request_validator=RV())
@@ -118,66 +101,59 @@ from dotenv import load_dotenv
 load_dotenv()
 
 COUCH_DB_URL=os.environ["COUCH_DB_URL"]
-COUCH_VIEW_URL=os.environ["COUCH_VIEW_URL"]
+COUCH_AUTH_VIEW_URL=os.environ["COUCH_AUTH_VIEW_URL"]
+COUCH_USR_VIEW_URL=os.environ["COUCH_USR_VIEW_URL"]
+COUCH_INVALIDATE_URL=os.environ["COUCH_INVALIDATE_URL"]
+COUCH_TIMESTAMP_URL=os.environ["COUCH_TIMESTAMP_URL"]
 COUCH_DB_AUTH=(os.environ["COUCH_DB_USER"],os.environ["COUCH_DB_PASS"])
 COUCH_VIEW_PARAMS={"include_docs": True, "reduce": False}
 
-@app.get("/req_tst")
-def rt(request: Request, scope: str = None,
-        auth_sess : Annotated[str | None, Cookie()] = None):
-    r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH, params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_request",auth_sess,int(datetime.now().timestamp()) - 60 * 60 * 5]),
-                                                                                     "end_key": json.dumps(["authorization_request",auth_sess,{}])})
-    # r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH, params=COUCH_VIEW_PARAMS | {"start_key": ['"a"',0]})
-    return r.json()["rows"]
+# session_duration = int(timedelta(seconds=5).total_seconds())
+auth_request_duration = int(timedelta(hours=3).total_seconds())
+session_duration = int(timedelta(days=7).total_seconds())
 
 @app.get("/authorize")
 def ath(request: Request, scope: str = None,
-        # auth_sess : Annotated[str | None, Cookie()] = None):
-        auth_sess : Annotated[str, Cookie()] = secrets.token_urlsafe(32)):
+        # auth_k : Annotated[str | None, Cookie()] = None):
+        auth_k : Annotated[str, Cookie()] = secrets.token_urlsafe(32)):
     request_scopes, request_info = ae.validate_authorization_request(str(request.url))
-    session_duration = 60 * 60 * 5
-    session_duration = 30
+    now_utc = int(datetime.now().timestamp())
     try:
-        r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-                         params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_success",auth_sess,int(datetime.now().timestamp()) - session_duration]),
-                                                     "end_key": json.dumps(["authorization_success",auth_sess,{}])})
-        authorization_success = r.json()["rows"][-1]["doc"]
-    # redis_conn = redis.Redis(connection_pool=redis_pool)
-    # grant_info = get_grant_info(redis_conn, auth_sess, request_info["client_id"])
-    # r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH, params=COUCH_VIEW_PARAMS)
-    # r.raise_for_status()
-    # print(r.json()["rows"][-1]["doc"])
-    # print("req_scopes: " + str(request_scopes))
-    # print("req_info: " + str(request_info))
-    # print("req_url: " + str(request.url))
+        r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_success",auth_k, now_utc - session_duration]),
+                                 "end_key": json.dumps(["authentication_success",auth_k,{}])})
+        authentication_success = r.json()["rows"][-1]["doc"]
         h, c, s = ae.create_authorization_response(str(request.url),
-                                                   credentials=request_info | {"auth_sess": auth_sess},
+                                                   credentials=request_info | {"auth_k": auth_k},
                                                    scopes=request_scopes)
+        requests.put(COUCH_TIMESTAMP_URL + "/" + authentication_success["_id"], auth=COUCH_DB_AUTH)
+        requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
+                      json={"type": "authentication_session", "auth_k": auth_k,
+                            "sid": secrets.token_urlsafe(16), "timestamp": now_utc})
         response = Response(c, headers=h, status_code=s)
     except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
-        log.debug(str(request_scopes))
-        # log.debug(str(request_info | {"request":None, "prompt":list(request}))
         requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
-                      json={"type": "authorization_request",
+                      json={"type": "authentication_request",
                             "req_scopes": request_scopes, "req_info":
                             {key: value for key, value in request_info.items() if key not in ['request','prompt']},
-                            "auth_cookie": auth_sess, "req_url": str(request.url),
-                            "timestamp": int(datetime.now().timestamp())})
+                            "auth_k": auth_k, "req_url": str(request.url),
+                            "timestamp": now_utc})
         response = RedirectResponse(url="/login", status_code=302)
-    log.debug("/authorize auth_sess..." + auth_sess)
-    response.set_cookie(key="auth_sess", value=auth_sess,
-                        max_age=int(timedelta(days=7).total_seconds()),
+    response.set_cookie(key="auth_k", value=auth_k,
+                        max_age=session_duration,
                         httponly=True, secure=True)
     return response        
 
 @app.get("/login")
-def login_get(request: Request, auth_sess : Annotated[str | None, Cookie()] = None):
+def login_get(request: Request, auth_k : Annotated[str | None, Cookie()] = None):
+    now_utc = int(datetime.now().timestamp())
     try:
-        r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-                         params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_request",auth_sess,int(datetime.now().timestamp()) - 60 * 60 * 5]),
-                                                     "end_key": json.dumps(["authorization_request",auth_sess,{}])})
-        # check invalid
-        r.json()["rows"][-1]["doc"]["auth_cookie"]
+        r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_request",auth_k,now_utc - auth_request_duration]),
+                                 "end_key": json.dumps(["authentication_request",auth_k,{}])})
+        r.json()["rows"][-1]["doc"]["auth_k"]
         return templates.TemplateResponse(
             request=request, name="login.djhtml", context={})
     
@@ -190,104 +166,67 @@ def login_get(request: Request, auth_sess : Annotated[str | None, Cookie()] = No
 def login_post(request: Request,  state: str = None,
                     username: Annotated[str, Form()] = None,
                     password: Annotated[str, Form()] = None,
-                    auth_sess : Annotated[str | None, Cookie()] = None):
+                    auth_k : Annotated[str | None, Cookie()] = None):
+    now_utc = int(datetime.now().timestamp())
     try:
-        r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-                         params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_request",auth_sess,int(datetime.now().timestamp()) - 60 * 60 * 5]),
-                                                     "end_key": json.dumps(["authorization_request",auth_sess,{}])})
-        # check invalid
-        authorization_request = r.json()["rows"][-1]["doc"]
-        allow = (username, password) == USER_CORRECT
-        if allow is True:
-            # requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH, json={"type": "invalid", "code": auth_sess})
-            new_auth_sess = secrets.token_urlsafe(32)
-            requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
-                          json=authorization_request | {"type": "authorization_success", "auth_claims": {"sid": "abc1234"},
-                                                        "auth_cookie": new_auth_sess, "timestamp": int(datetime.now().timestamp())})
-            response = RedirectResponse(url=authorization_request["req_url"], status_code=302)
-            response.set_cookie(key="auth_sess", value=new_auth_sess,
-                                max_age=int(timedelta(hours=3).total_seconds()),
-                                httponly=True, secure=True)
-            log.debug("/login new_auth_sess..." + new_auth_sess)
-            return response
-        else:
+        r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authentication_request",auth_k,now_utc - auth_request_duration]),
+                                                     "end_key": json.dumps(["authentication_request",auth_k,{}])})
+        authentication_request = r.json()["rows"][-1]["doc"]
+        try:
+            r = requests.get(COUCH_USR_VIEW_URL, auth=COUCH_DB_AUTH,
+                             params={"include_docs": True, "reduce": False,
+                                     "key": json.dumps(["email",username])}).json()["rows"]
+            assert r
+            user = r[-1]["doc"]
+            assert user["password"] == password
+        except AssertionError as e:
             response = templates.TemplateResponse(
                 request=request, name="login.djhtml", context={"username": username,
                                                                "password": password,
                                                                "form_error": True})
             return response
+        new_auth_k = secrets.token_urlsafe(32)
+        requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
+                      json=authentication_request | {"type": "authentication_success",
+                                                     "id_claims": {"uid": user["uid"],
+                                                                   "email": user["email"],
+                                                                   "email_verified": user["email_verified"],
+                                                                   "first_name": user["first_name"],
+                                                                   "last_name": user["last_name"],
+                                                                   "nickname": user["nickname"]},
+                                                    "auth_k": new_auth_k, "timestamp": now_utc})
+        response = RedirectResponse(url=authentication_request["req_url"], status_code=302)
+        response.set_cookie(key="auth_k", value=new_auth_k,
+                            max_age=session_duration,
+                            httponly=True, secure=True)
+        return response
     except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
         response = PlainTextResponse(str(e))
-        return response
+        return response    
 
-@app.get("/logout")
-def logout(request: Request,  state: str = None,
-                    return_to: str = None,
-                    auth_sess : Annotated[str | None, Cookie()] = None):
-    redis_conn = redis.Redis(connection_pool=redis_pool)
+class Sess(BaseModel):
+    sid: str
+
+@app.post("/logout")
+async def session_logout(request: Request, sess: Sess):
     try:
-        s_json = redis_conn.get(auth_sess)
-        GrantInfo.model_validate_json(s_json)
-        redis_conn.delete(auth_sess)
-    except (DataError, ValidationError) as e:
-        pass
-    response = RedirectResponse(url=return_to, status_code=302) #default return_to
-    return response
-    
+        r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_session",sess.sid,0]),
+                                 "end_key": json.dumps(["authentication_session",sess.sid,{}])})
+        auth_k = r.json()["rows"][-1]["doc"]["auth_k"]
+        r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_success",auth_k,0]),
+                                 "end_key": json.dumps(["authentication_success",auth_k,{}])})
+        authentication_success = r.json()["rows"][-1]["doc"]
+        r = requests.put(COUCH_INVALIDATE_URL + "/" + authentication_success["_id"], auth=COUCH_DB_AUTH)
+        return {"status": "logged out"}
+    except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
+        print(e)
+        return {"status": "error"}
     
 @app.get("/.well-known/jwks.json")
 def jwks():
     return keys.export(private_keys=False, as_dict=True)
-
-# @app.get("/login")
-# def login_get(request: Request, state: str = None, auth_sess : Annotated[str | None, Cookie()] = None):
-    
-#     requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-#                   json={"type": "authorization_request", "scopes": request_scopes,
-#                         "auth_cookie": auth_cookie, "req_url": str(request.url), "timestamp": int(datetime.now().timestamp())})
-#     redis_conn = redis.Redis(connection_pool=redis_pool)
-#     try:
-#         s_json = redis_conn.get(auth_sess)
-#         grant_info = GrantInfo.model_validate_json(s_json)
-#         # confirm client_id
-#         # display template response for client_id
-#         return templates.TemplateResponse(
-#             request=request, name="login.djhtml", context={"username": grant_info.form_username,
-#                                                            "password": grant_info.form_password,
-#                                                            "form_error": grant_info.form_error_msg})
-#     except (DataError, ValidationError) as e:
-#         response = PlainTextResponse(str(e))
-#         # response = RedirectResponse(url="/tenant_error_page", status_code=302)
-#         return response
-
-# @app.post("/login")
-# def login_post(request: Request,  state: str = None,
-#                     username: Annotated[str, Form()] = None,
-#                     password: Annotated[str, Form()] = None,
-#                     auth_sess : Annotated[str | None, Cookie()] = None):
-#     redis_conn = redis.Redis(connection_pool=redis_pool)
-#     try:
-#         s_json = redis_conn.get(auth_sess)
-#         grant_info = GrantInfo.model_validate_json(s_json)
-#         allow = (username, password) == USER_CORRECT
-#         if allow is True:
-#             new_auth_sess = secrets.token_urlsafe(32)
-#             grant_info.sub = username
-#             grant_info.email = "a@b.c"
-#             grant_info.nickname = "fr"
-#             response = RedirectResponse(url=grant_info.authorization_request_uri, status_code=302)
-#             redis_conn.setex(new_auth_sess, int(timedelta(hours=3).total_seconds()), grant_info.model_dump_json())
-#             redis_conn.delete(auth_sess)
-#             response.set_cookie(key="auth_sess", value=new_auth_sess,
-#                                 max_age=int(timedelta(hours=3).total_seconds()),
-#                                 httponly=True, secure=True)
-#             return response
-#         else:
-#             response = templates.TemplateResponse(
-#                 request=request, name="login.djhtml", context={"username": username,
-#                                                                "password": password,
-#                                                                "form_error": True})
-#             return response
-#     except (DataError, ValidationError) as e:
-#         response = PlainTextResponse(str(e))
-#         return response

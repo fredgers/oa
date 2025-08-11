@@ -29,39 +29,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 COUCH_DB_URL=os.environ["COUCH_DB_URL"]
-COUCH_VIEW_URL=os.environ["COUCH_VIEW_URL"]
+COUCH_AUTH_VIEW_URL=os.environ["COUCH_AUTH_VIEW_URL"]
 COUCH_DB_AUTH=(os.environ["COUCH_DB_USER"],os.environ["COUCH_DB_PASS"])
 COUCH_VIEW_PARAMS={"include_docs": True, "reduce": False}
 
-class GrantInfo(BaseModel):
-    client_id: str
-    authorization_request_uri: str | None = None
-    iss: str | None = None
-    redirect_uri: str | None = None
-    response_type: str | None = None
-    grant_type: str | None = None
-    state: str | None = None
-    scopes: List[str] = []
-    # authorization_code_scopes: List[str] = []
-    nickname: str | None = None 
-    email: str | None = None 
-    sub: str | None = None
-    auth_code: str | None = None
-    auth_code_exp: int = 0
-    authorization_code: str | None = None
-    authorization_code_exp: int = 0
-    form_username: str = ""
-    form_password: str = ""
-    form_error_msg: bool = False
 
-    def can_grant_scopes(self, scopes):
-        if {"openid"}.issubset(scopes) and not isinstance(self.sub, str):
-            return False
-        if {"email"}.issubset(scopes) and not isinstance(self.email, str):
-            return False
-        if {"profile"}.issubset(scopes) and not isinstance(self.nickname, str):
-            return False
-        return True
+    # def can_grant_scopes(self, scopes):
+    #     if {"openid"}.issubset(scopes) and not isinstance(self.sub, str):
+    #         return False
+    #     if {"email"}.issubset(scopes) and not isinstance(self.email, str):
+    #         return False
+    #     if {"profile"}.issubset(scopes) and not isinstance(self.nickname, str):
+    #         return False
+    #     return True
 
 class Client(BaseModel):
     client_id: str
@@ -69,9 +49,6 @@ class Client(BaseModel):
     valid_redirect_uris: List[str]
     valid_scopes: List[str]
     valid_grant_types: List[str]
-
-class AuthCode(BaseModel):
-    auth_sess_pointer: str
         
 r = redis.Redis(connection_pool=redis_pool)
 
@@ -128,23 +105,10 @@ class RV(RequestValidator):
 
     def save_authorization_code(self, client_id, code, request, *args, **kwargs):
         log.debug("sv_auth_code")
+        now_utc = int(datetime.now().timestamp())
         requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
                       json={"type": "authorization_code", "authorization_code": code["code"],
-                            "auth_cookie": request.auth_sess, "timestamp": int(datetime.now().timestamp())})
-        # ac = AuthCode.model_validate({"auth_sess_pointer": request.auth_sess})
-        # redis_conn = redis.Redis(connection_pool=redis_pool)
-        # grant_info_json = redis_conn.get(request.auth_sess)
-        # grant_info = GrantInfo.model_validate_json(grant_info_json) #test client_id
-        # grant_info.iss = request.client.iss
-        # grant_info.redirect_uri = request.redirect_uri
-        # grant_info.response_type = request.response_type #?
-        # grant_info.state = request.state
-        # grant_info.scopes = request.scopes
-        # grant_info.authorization_code = code["code"] #test?
-        # log.debug("code... " + str(code))
-        # log.debug("ac... " + str(ac.model_dump_json()))
-        # redis_conn.setex(request.auth_sess, int(timedelta(hours=3).total_seconds()), grant_info.model_dump_json())
-        # redis_conn.setex(code["code"], int(timedelta(minutes=10).total_seconds()), ac.model_dump_json())
+                            "auth_k": request.auth_k, "timestamp": now_utc})
 
     def authenticate_client(self, request, *args, **kwargs):
         log.debug("auth cli")
@@ -163,26 +127,32 @@ class RV(RequestValidator):
         return {grant_type}.issubset(client.valid_grant_types)
     def validate_code(self, client_id, code, client, request, *args, **kwargs):
         log.debug("validate_code   " + code)
+        now_utc = int(datetime.now().timestamp())
+        auth_code_duration = int(timedelta(minutes=10).total_seconds())
         try:
-            r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-                             params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_code",code,
-                                                                                  int(datetime.now().timestamp()) - 60 * 10]),
-                                                         "end_key": json.dumps(["authorization_code",code,{}])})
-            authorization_code = r.json()["rows"][-1]["doc"]
-            log.debug("auth_code: " + str(authorization_code))
-            r = requests.get(COUCH_VIEW_URL, auth=COUCH_DB_AUTH,
-                             params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authorization_success",authorization_code["auth_cookie"],
-                                                                                  int(datetime.now().timestamp()) - 60 * 60 * 5]),
-                                                         "end_key": json.dumps(["authorization_success",authorization_code["auth_cookie"],{}])})
-            authorization_success = r.json()["rows"][-1]["doc"]
-            log.debug("auth_success: " + str(authorization_success))
-            request.auth_claims = authorization_success["auth_claims"]
-            request.scopes = authorization_success["req_scopes"]
-            request.req_info = authorization_success["req_info"]
+            r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authorization_code",code,
+                                                          now_utc - auth_code_duration]),
+                                 "end_key": json.dumps(["authorization_code",code,{}])})
+            # authorization_code = r.json()["rows"][-1]["doc"]["auth_k"]
+            auth_k = r.json()["rows"][-1]["doc"]["auth_k"]
+            r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_success",auth_k,0]),
+                                 "end_key": json.dumps(["authentication_success",auth_k,{}])})
+            authentication_success = r.json()["rows"][-1]["doc"]
+            r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_session",auth_k,0]),
+                                 "end_key": json.dumps(["authentication_session",auth_k,{}])})
+            authentication_session = r.json()["rows"][-1]["doc"]
+            request.id_claims = authentication_success["id_claims"]
+            request.scopes = authentication_success["req_scopes"]
+            request.req_info = authentication_success["req_info"]
+            request.sid = authentication_session["sid"]
             return True
         except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
-            log.debug("auth error ")
-            log.debug("auth error: " + str(e))
             return False
 
     def validate_silent_login(self, request):
@@ -198,13 +168,16 @@ class RV(RequestValidator):
         log.debug("fin_id_tok")
         # id_token["iss"] = grant_info.iss
         id_token["aud"] = request.req_info["client_id"]
-        id_token["sid"] = request.auth_claims["sid"]
-        # id_token["sub"] = grant_info.sub
+        id_token["sub"] = request.id_claims["uid"]
+        id_token["sid"] = request.sid
         # id_token["exp"] = id_token["iat"] + request.expires_in
-        # if {"email"}.issubset(grant_info.scopes):
-        #     id_token["email"] = grant_info.email
-        # if {"profile"}.issubset(grant_info.scopes):
-        #     id_token["nickname"] = grant_info.nickname
+        if {"email"}.issubset(request.scopes):
+            id_token["email"] = request.id_claims["email"]
+            id_token["email_verified"] = request.id_claims["email_verified"]
+        if {"profile"}.issubset(request.scopes):
+            id_token["last_name"] = request.id_claims["last_name"]
+            id_token["first_name"] = request.id_claims["first_name"]
+            id_token["nickname"] = request.id_claims["nickname"]
         res_bytes = json.dumps(id_token).encode('utf-8')
         jwstoken = jws.JWS(res_bytes)
         jwstoken.add_signature(key, protected={"alg": "RS256", "typ": "JWT", "kid": key.thumbprint()})
