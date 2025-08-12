@@ -31,10 +31,12 @@ from pydantic import BaseModel, ValidationError
 from redis.exceptions import DataError
 from requests_oauthlib import OAuth2Session
 
-from request_validator import RV
-from database import redis_pool, oadb, key, keys
+from .request_validator import RV
+from .database import redis_pool, oadb, key, keys
 from redis.exceptions import DataError
 import requests
+
+from .routers import pw_reset
 
 # Create a SysLogHandler and formatter
 syslog_handler = logging.handlers.SysLogHandler(address='/dev/log', facility="local3")
@@ -62,7 +64,7 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan, openapi_url=None, docs_url=None, redoc_url=None)
-
+app.include_router(pw_reset.router)
 
 # this must be randomly generated
 RANDON_SESSION_ID = "iskksioskassyidd"
@@ -230,3 +232,4 @@ async def session_logout(request: Request, sess: Sess):
 @app.get("/.well-known/jwks.json")
 def jwks():
     return keys.export(private_keys=False, as_dict=True)
+

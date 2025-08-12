@@ -8,7 +8,7 @@ from typing import Annotated, List
 from oauthlib.openid.connect.core.request_validator import RequestValidator
 
 import redis
-from database import redis_pool, oadb, key, keys
+from .database import redis_pool, oadb, key, keys
 from jwcrypto import jws
 import requests
 
