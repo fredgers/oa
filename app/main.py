@@ -106,7 +106,7 @@ load_dotenv()
 COUCH_DB_URL=os.environ["COUCH_DB_URL"]
 COUCH_AUTH_VIEW_URL=os.environ["COUCH_AUTH_VIEW_URL"]
 COUCH_USR_VIEW_URL=os.environ["COUCH_USR_VIEW_URL"]
-COUCH_INVALIDATE_URL=os.environ["COUCH_INVALIDATE_URL"]
+# COUCH_INVALIDATE_URL=os.environ["COUCH_INVALIDATE_URL"]
 COUCH_TIMESTAMP_URL=os.environ["COUCH_TIMESTAMP_URL"]
 COUCH_DB_AUTH=(os.environ["COUCH_DB_USER"],os.environ["COUCH_DB_PASS"])
 COUCH_VIEW_PARAMS={"include_docs": True, "reduce": False}
@@ -168,9 +168,9 @@ def login_get(request: Request, auth_k : Annotated[str | None, Cookie()] = None)
 
 @app.post("/login")
 def login_post(request: Request,
-                    email_address: Annotated[str, Form()] = None,
-                    password: Annotated[str, Form()] = None,
-                    auth_k : Annotated[str | None, Cookie()] = None):
+               email_address: Annotated[str, Form()] = None,
+               password: Annotated[str, Form()] = None,
+               auth_k : Annotated[str | None, Cookie()] = None):
     now_utc = int(datetime.now().timestamp())
     try:
         r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
@@ -180,10 +180,10 @@ def login_post(request: Request,
                                  "end_key": json.dumps(["authentication_request",auth_k,{}])})
         authentication_request = r.json()["rows"][-1]["doc"]
         try:
-            r = requests.get(COUCH_USR_VIEW_URL, auth=COUCH_DB_AUTH,
+            r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
                              params={"include_docs": True, "reduce": False,
-                                     "key": json.dumps(["email",email_address])}).json()["rows"]
-            assert r
+                                     "key": json.dumps(["user",email_address])}).json()["rows"]
+            assert r ##change me
             user = r[-1]["doc"]
             assert user["password"] == password
         except AssertionError as e:
@@ -221,13 +221,16 @@ async def session_logout(request: Request, sess: Sess):
                          params={"include_docs": True, "reduce": False,
                                  "start_key": json.dumps(["authentication_session",sess.sid,0]),
                                  "end_key": json.dumps(["authentication_session",sess.sid,{}])})
+        authentication_session = r.json()["rows"][-1]["doc"]
         auth_k = r.json()["rows"][-1]["doc"]["auth_k"]
         r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
                          params={"include_docs": True, "reduce": False,
                                  "start_key": json.dumps(["authentication_success",auth_k,0]),
                                  "end_key": json.dumps(["authentication_success",auth_k,{}])})
         authentication_success = r.json()["rows"][-1]["doc"]
-        r = requests.put(COUCH_INVALIDATE_URL + "/" + authentication_success["_id"], auth=COUCH_DB_AUTH)
+        # r = requests.put(COUCH_INVALIDATE_URL + "/" + authentication_success["_id"], auth=COUCH_DB_AUTH)
+        r1 = requests.delete(COUCH_DB_URL + "/" + authentication_session["_id"] + "?rev=" + authentication_session["_rev"], auth=COUCH_DB_AUTH)
+        r2 = requests.delete(COUCH_DB_URL + "/" + authentication_success["_id"] + "?rev=" + authentication_success["_rev"], auth=COUCH_DB_AUTH)
         return {"status": "logged out"}
     except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
         print(e)

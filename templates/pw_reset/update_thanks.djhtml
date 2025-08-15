@@ -8,7 +8,7 @@
     <main class="pa4 black-80">
       <form method="POST" class="measure center">
         <fieldset id="sign_up" class="ba b--transparent ph0 mh0">
-          <legend class="f4 fw6 ph0 mh0">{{email_address}}にメールを送信しました</legend>
+          <legend class="f4 fw6 ph0 mh0">パスワードアプデートはありがとうございました</legend>
         </fieldset>
         <div class="lh-copy mt3">
           <a href="{{site_link}}" class="f6 link dim black db">サイトに戻る</a>

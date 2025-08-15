@@ -8,27 +8,22 @@
     <main class="pa4 black-80">
       <form method="POST" class="measure center">
         <fieldset id="sign_up" class="ba b--transparent ph0 mh0">
-          <legend class="f4 fw6 ph0 mh0">ログイン</legend>
-          {% if login_error %}
-          <div class="mt1 red">メールアドレスまたはパスワードが間違っています
-          </div>
+          <legend class="f4 fw6 ph0 mh0">新しいパスワードを入力してください</legend>
+          {% if password_error %}
+          <div class="mt1 red">{{password_error}}</div>
           {% endif %}
           <div class="mt3">
-            <label class="db fw6 lh-copy f6">メールアドレス</label>
-            <input class="pa2 ba bg-transparent w-100" type="text" name="email_address" value="{{email_address}}">
+            <label class="db fw6 lh-copy f6">パスワード</label>
+            <input class="pa2 ba bg-transparent w-100" type="text" name="password_1" value="{{password_1}}">
           </div>
           <div class="mv3">
-            <label class="db fw6 lh-copy f6">パスワード</label>
-            <input class="b pa2 ba bg-transparent w-100" type="password" name="password" value="{{password}}">
+            <label class="db fw6 lh-copy f6">パスワード確認</label>
+            <input class="b pa2 ba bg-transparent w-100" type="password" name="password_2" value="{{password_2}}">
           </div>
         </fieldset>
         <div class="">
-          <input class="b ph3 pv2 input-reset ba b--black bg-transparent grow pointer f6 dib" type="submit" value="Sign in">
+          <input class="b ph3 pv2 input-reset ba b--black bg-transparent grow pointer f6 dib" type="submit" value="パスワードをリセット">
         </div>
-        <div class="lh-copy mt5">
-          <a href="/pw_reset/start" class="f6 link dim black db">パスワードをお忘れですか</a>
-        </div>
-         <input type="hidden" name="login_state" value="{{login_state}}">
       </form>
     </main>
 

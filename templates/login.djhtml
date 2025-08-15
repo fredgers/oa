@@ -23,10 +23,10 @@
           </div>
         </fieldset>
         <div class="">
-          <input class="b ph3 pv2 input-reset ba b--black bg-transparent grow pointer f6 dib" type="submit" value="Sign in">
+          <input class="b ph3 pv2 input-reset ba b--black bg-transparent grow pointer f6 dib" type="submit" value="ログイン">
         </div>
         <div class="lh-copy mt5">
-          <a href="/pw_reset/start" class="f6 link dim black db">パスワードをお忘れですか</a>
+          <a href="/pw_reset/start" class="f5 link dim black db">パスワードをお忘れですか</a>
         </div>
       </form>
     </main>
