@@ -28,6 +28,7 @@
         <div class="lh-copy mt5">
           <a href="/pw_reset/start" class="f6 link dim black db">パスワードをお忘れですか</a>
         </div>
+         <input type="hidden" name="login_state" value="{{login_state}}">
       </form>
     </main>
 

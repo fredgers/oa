@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+  <title> </title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/tachyons/css/tachyons.min.css">
+  <body>
+
+    <main class="pa4 black-80">
+      <form method="POST" class="measure center">
+        <fieldset id="sign_up" class="ba b--transparent ph0 mh0">
+          <legend class="f4 fw6 ph0 mh0">{{email_address}}にメールを送信しました</legend>
+        </fieldset>
+        <div class="lh-copy mt3">
+          <a href="/login" class="f6 link dim black db">ログインフォーム</a>
+        </div>
+      </form>
+    </main>
+
+  </body>
+</html>

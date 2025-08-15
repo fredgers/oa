@@ -64,7 +64,8 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan, openapi_url=None, docs_url=None, redoc_url=None)
-app.include_router(pw_reset.router)
+app.include_router(pw_reset.router,
+                   prefix="/pw_reset")
 
 # this must be randomly generated
 RANDON_SESSION_ID = "iskksioskassyidd"
@@ -162,31 +163,34 @@ def login_get(request: Request, auth_k : Annotated[str | None, Cookie()] = None)
     except (IndexError, KeyError, requests.exceptions.HTTPError) as e:
         response = PlainTextResponse(str(e))
         # response = RedirectResponse(url="/tenant_error_page", status_code=302)
+        # list index out of range
         return response
 
 @app.post("/login")
-def login_post(request: Request,  state: str = None,
-                    username: Annotated[str, Form()] = None,
+def login_post(request: Request,
+                    email_address: Annotated[str, Form()] = None,
                     password: Annotated[str, Form()] = None,
                     auth_k : Annotated[str | None, Cookie()] = None):
     now_utc = int(datetime.now().timestamp())
     try:
         r = requests.get(COUCH_AUTH_VIEW_URL, auth=COUCH_DB_AUTH,
-                         params=COUCH_VIEW_PARAMS | {"start_key": json.dumps(["authentication_request",auth_k,now_utc - auth_request_duration]),
-                                                     "end_key": json.dumps(["authentication_request",auth_k,{}])})
+                         params={"include_docs": True, "reduce": False,
+                                 "start_key": json.dumps(["authentication_request",auth_k,
+                                                          now_utc - auth_request_duration]),
+                                 "end_key": json.dumps(["authentication_request",auth_k,{}])})
         authentication_request = r.json()["rows"][-1]["doc"]
         try:
             r = requests.get(COUCH_USR_VIEW_URL, auth=COUCH_DB_AUTH,
                              params={"include_docs": True, "reduce": False,
-                                     "key": json.dumps(["email",username])}).json()["rows"]
+                                     "key": json.dumps(["email",email_address])}).json()["rows"]
             assert r
             user = r[-1]["doc"]
             assert user["password"] == password
         except AssertionError as e:
             response = templates.TemplateResponse(
-                request=request, name="login.djhtml", context={"username": username,
+                request=request, name="login.djhtml", context={"email_address": email_address,
                                                                "password": password,
-                                                               "form_error": True})
+                                                               "login_error": True})
             return response
         new_auth_k = secrets.token_urlsafe(32)
         requests.post(COUCH_DB_URL, auth=COUCH_DB_AUTH,
